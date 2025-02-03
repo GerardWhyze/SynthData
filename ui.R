@@ -30,6 +30,8 @@ ui <- fluidPage(
       "Data Summary",
       fluidPage(
         br(),
+        downloadButton("downloadData", "Export Data to CSV"),
+        br(), br(),
         DTOutput("dataPreview")
       )
     ),

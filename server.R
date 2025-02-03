@@ -407,7 +407,18 @@ server <- function(input, output, session) {
         theme_minimal()
     }
   })
+  
+  #Export Data to CSV ------------------------------------------
+  output$downloadData <- downloadHandler(
+    filename = function() {
+      paste("synthetic_data_", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(rv$data, file, row.names = FALSE)
+    }
+  )
 }
+
 
 
 
