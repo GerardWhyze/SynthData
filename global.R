@@ -1,10 +1,11 @@
 # global --------------------------------------------------------------------
-# Sources all R6 class definitions in order, then creates the global manager.
 
 library(shiny)
 library(MASS)  # for mvrnorm
 library(DT)
 library(bslib)
+library(ggplot2)
+library(fitdistrplus)
 
 # Helper function to ensure correlation matrix is positive semidefinite
 make_positive_definite <- function(mat, tol = 1e-8) {
@@ -19,4 +20,9 @@ make_positive_definite <- function(mat, tol = 1e-8) {
   adj_mat <- vecs %*% diag_mat %*% t(vecs)
   adj_mat <- (adj_mat + t(adj_mat)) / 2
   adj_mat
+}
+
+#Helper function to round poisson values to nearest integer
+pois_density <- function(x, lambda) {
+  dpois(round(x), lambda = lambda)
 }
