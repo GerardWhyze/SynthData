@@ -1,5 +1,4 @@
 # global --------------------------------------------------------------------
-# Sources all R6 class definitions in order, then creates the global manager.
 
 library(shiny)
 library(MASS)  # for mvrnorm
