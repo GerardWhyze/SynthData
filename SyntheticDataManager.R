@@ -1,5 +1,3 @@
-# SyntheticDataManager --------------------
-
 SyntheticDataManager <- R6Class(
   "SyntheticDataManager",
   public = list(
@@ -32,7 +30,7 @@ SyntheticDataManager <- R6Class(
         p <- length(numNames)
         corrMat <- diag(p)
         if (p > 0) {
-          # Fill correlation matrix based on a single correlation link, if defined
+          # Fill correlation matrix if any variable has a correlation link defined
           for (i in seq_along(numericVars)) {
             v_i <- numericVars[[i]]
             if (!is.null(v_i$corr)) {
@@ -44,15 +42,15 @@ SyntheticDataManager <- R6Class(
               }
             }
           }
-          # Ensure the correlation matrix is positive definite
+          # Ensure the correlation matrix is positive definite.
           corrMat <- private$make_positive_definite(corrMat)
           
-          # Generate correlated standard normal variates
+          # Generate correlated standard normal variates.
           Z <- MASS::mvrnorm(nObs, mu = rep(0, p), Sigma = corrMat)
           Z <- as.data.frame(Z)
           names(Z) <- numNames
           
-          # Transform each numeric variable based on its distribution
+          # Transform each numeric variable based on its distribution.
           for (i in seq_along(numericVars)) {
             vdef <- numericVars[[i]]
             colZ <- Z[[vdef$varName]]
@@ -83,7 +81,7 @@ SyntheticDataManager <- R6Class(
             } else if (distType == "F") {
               colFinal <- qf(u, df1 = vdef$df1, df2 = vdef$df2)
             } else {
-              colFinal <- colZ  # fallback to standard normal
+              colFinal <- colZ  # Fallback to standard normal.
             }
             Z[[vdef$varName]] <- colFinal
           }
@@ -118,7 +116,7 @@ SyntheticDataManager <- R6Class(
         }
       }
       
-      # Add global noise (for numeric columns)
+      # Add global noise (to numeric columns)
       if (!is.null(numericDF) &&
           globalNoise > 0) {
         for (colName in names(numericDF)) {
@@ -126,7 +124,7 @@ SyntheticDataManager <- R6Class(
         }
       }
       
-      # Impose global missingness
+      # Impose global missingness.
       if (globalMissing > 0) {
         for (cn in names(df)) {
           idx <- sample(seq_len(nObs), size = floor(nObs * globalMissing))
@@ -139,7 +137,7 @@ SyntheticDataManager <- R6Class(
   ),
   
   private = list(
-    # A helper to adjust a matrix to be positive definite.
+    # Helper: Adjust a matrix to be positive definite.
     make_positive_definite = function(mat, tol = 1e-8) {
       if (!isSymmetric(mat)) {
         mat <- (mat + t(mat)) / 2

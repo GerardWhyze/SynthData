@@ -1,10 +1,12 @@
+# server.R
+library(shiny)
+library(ggplot2)
+library(DT)
+library(MASS)  # for mvrnorm
 
-# Server ------------------------------------------------------------------
-
-
-# Source the advanced UI code (provides getAddVariableModal())
+# Source the advanced UI code (which now uses an R6 class for the modal)
 source("advancedUI.R", local = TRUE)
-# Source our refactored R6 class (SyntheticDataManager)
+# Source our refactored R6 class for data generation.
 source("SyntheticDataManager.R", local = TRUE)
 
 server <- function(input, output, session) {
@@ -12,27 +14,23 @@ server <- function(input, output, session) {
   # Create an instance of the SyntheticDataManager R6 class.
   dataManager <- SyntheticDataManager$new()
   
-  # Use reactiveValues to store final generated data and to trigger UI updates.
+  # Use reactiveValues to store the final generated data and a dummy value to trigger UI updates.
   rv <- reactiveValues(
     data = NULL,
-    # Dummy value to force reactive updates when the manager's varList is modified.
     varListReactive = list()
   )
   
 
-# ADD VARIABLE  -----------------------------------------------------------
+# ADD VARIABLE ------------------------------------------------------------
 
 
   observeEvent(input$addVar, {
     # Build a list of existing numeric variable names from the manager's varList.
     numericVars <- names(dataManager$varList)
-    # Show the modal (from advancedUI.R); pass numericVars for the correlation dropdown.
+    # Show the modal using our advancedUI helper.
     showModal(getAddVariableModal(existingNumericVars = numericVars))
   })
   
-
-# ACCEPT VARIABLE  --------------------------------------------------------
-
 
   observeEvent(input$acceptVar, {
     varName <- input$varName_modal
@@ -42,6 +40,8 @@ server <- function(input, output, session) {
     }
     varType <- input$varType_modal
     varDesc <- input$varDesc_modal
+    # Ensure varDesc is not NULL
+    if (is.null(varDesc)) varDesc <- ""
     
     newVarDef <- list(
       varName = varName,
@@ -53,7 +53,7 @@ server <- function(input, output, session) {
       distType <- input$distType_modal
       newVarDef$distType <- distType
       
-      # Collect distribution parameters based on distribution type.
+      # Collect distribution parameters based on the distribution type.
       switch(distType,
              "Normal" = {
                newVarDef$mean <- input$param_normal_mean
@@ -101,7 +101,7 @@ server <- function(input, output, session) {
              }
       )
       
-      # Set correlation if defined.
+      # Set correlation if provided.
       if (!is.null(input$corrWith_modal) && input$corrWith_modal != "None") {
         newVarDef$corr <- list(varName = input$corrWith_modal, value = input$corrValue_modal)
       } else {
@@ -111,17 +111,17 @@ server <- function(input, output, session) {
     } else {  # For categorical variables.
       catVec <- c(input$cat1, input$cat2, input$cat3, 
                   input$cat4, input$cat5, input$cat6)
-      catVec <- catVec[nzchar(catVec)]  # Remove blank entries.
+      catVec <- catVec[nzchar(catVec)]  # Remove blanks
       if (length(catVec) == 0) {
         catVec <- "Category1"
       }
       newVarDef$categories <- catVec
-      newVarDef$corr <- NULL  # Correlation not applicable.
+      newVarDef$corr <- NULL  # Not applicable
     }
     
     # Add the new variable definition to our SyntheticDataManager.
     dataManager$addVariable(newVarDef)
-    # Update our reactive dummy value so that UI outputs (variable cards) re-render.
+    # Update our reactive dummy value so that the variable cards re-render.
     rv$varListReactive <- dataManager$varList
     removeModal()
     showNotification("Variable added successfully!", type = "message")
@@ -136,11 +136,13 @@ server <- function(input, output, session) {
       return(tags$i("No variables defined yet."))
     }
     
-    # Create a "card" for each variable.
+    # Create a card for each variable.
     cards <- lapply(rv$varListReactive, function(vdef) {
       varName <- vdef$varName
       varType <- vdef$varType
       desc    <- vdef$desc
+      if (is.null(desc)) desc <- ""
+      
       body <- NULL
       
       if (varType == "numeric") {
@@ -157,11 +159,12 @@ server <- function(input, output, session) {
         if (!is.null(vdef$corr)) {
           corrStr <- paste0("Corr with ", vdef$corr$varName, "=", vdef$corr$value)
         }
+        
         body <- tagList(
           strong("Type: "), "Numeric (", distType, ")",
           br(),
           strong("Parameters: "), paramStr, br(),
-          if (nzchar(corrStr)) tagList(strong("Correlation: "), corrStr, br()),
+          if (!is.null(corrStr) && nzchar(corrStr)) tagList(strong("Correlation: "), corrStr, br()),
           if (nzchar(desc)) tagList(strong("Description: "), desc)
         )
       } else {
@@ -206,7 +209,6 @@ server <- function(input, output, session) {
     ))
   })
   
- 
   observeEvent(input$confirmGenerate, {
     removeModal()
     nObs <- input$nObs_modal
@@ -221,9 +223,8 @@ server <- function(input, output, session) {
       showNotification(paste("Error:", e$message), type = "error")
     })
   })
-  
 
-# DATA PREVIEW & DOWNLOAD -------------------------------------------------
+# DATA PREVIEW ------------------------------------------------------------
 
 
   output$dataPreview <- renderDT({
@@ -243,7 +244,7 @@ server <- function(input, output, session) {
 
 # VISUALISATION -----------------------------------------------------------
 
- 
+  
   output$varSelectUI <- renderUI({
     req(rv$data)
     selectInput("selectedVar", "Select Variable", choices = names(rv$data))
@@ -252,9 +253,9 @@ server <- function(input, output, session) {
   output$distPlot <- renderPlot({
     req(input$selectedVar, rv$data)
     varData <- rv$data[[input$selectedVar]]
-    varData <- na.omit(varData)  # remove any NA values
+    varData <- na.omit(varData)  # Remove any NA values
     
-    # If the selected variable is defined in our manager's varList, use its definition.
+    # Check if the selected variable has a definition in our manager.
     if (input$selectedVar %in% names(rv$varListReactive)) {
       vdef <- rv$varListReactive[[input$selectedVar]]
       if (vdef$varType == "numeric") {
@@ -279,12 +280,12 @@ server <- function(input, output, session) {
           chosen_dist <- "norm"
         }
         
-        # Attempt to fit the distribution using fitdist() from the fitdistrplus package.
+        # Attempt to fit the distribution using fitdist() (from fitdistrplus).
         fit <- tryCatch({
           fitdist(varData, chosen_dist)
         }, error = function(e) NULL)
         
-        # Obtain the corresponding density function.
+        # Retrieve the corresponding density function.
         density_fun <- tryCatch({
           get(paste0("d", chosen_dist))
         }, error = function(e) NULL)
@@ -294,7 +295,7 @@ server <- function(input, output, session) {
         
         # Special handling for Poisson distributions.
         if (chosen_dist == "pois") {
-          density_fun <- pois_density
+          density_fun <- pois_density  # Ensure pois_density() is defined elsewhere.
         } else {
           density_fun <- get(paste0("d", chosen_dist))
         }
@@ -325,7 +326,7 @@ server <- function(input, output, session) {
           theme_minimal()
       }
     } else {
-      # Fallback: if no variable definition is found, show a histogram.
+      # Fallback: if no variable definition is found, display a histogram.
       ggplot(data = data.frame(x = varData), aes(x = x)) +
         geom_histogram(aes(y = ..density..), bins = 30, fill = "blue", alpha = 0.6) +
         labs(title = paste("Histogram for", input$selectedVar),
@@ -334,5 +335,5 @@ server <- function(input, output, session) {
         theme_minimal()
     }
   })
-  
+
 }
