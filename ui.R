@@ -1,7 +1,3 @@
-library(shiny)
-library(bslib)
-library(DT)
-
 ui <- fluidPage(
   theme = bs_theme(),
   
@@ -42,8 +38,10 @@ ui <- fluidPage(
     tabPanel(
       "Visualisations",
       fluidPage(
-        br()
-        # Insert any UI elements for plots/charts/etc. here
+        br(),
+        # Add a selector for the variable and a plot for the distribution/bar chart.
+        uiOutput("varSelectUI"),
+        plotOutput("distPlot")
       )
     )
   )
