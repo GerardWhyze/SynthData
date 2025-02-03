@@ -1,27 +1,39 @@
-# Source the advanced UI code (so we can call getAddVariableModal())
+
+# Server ------------------------------------------------------------------
+
+
+# Source the advanced UI code (provides getAddVariableModal())
 source("advancedUI.R", local = TRUE)
+# Source our refactored R6 class (SyntheticDataManager)
+source("SyntheticDataManager.R", local = TRUE)
 
 server <- function(input, output, session) {
   
-  # Reactive storage for variables and final data
+  # Create an instance of the SyntheticDataManager R6 class.
+  dataManager <- SyntheticDataManager$new()
+  
+  # Use reactiveValues to store final generated data and to trigger UI updates.
   rv <- reactiveValues(
-    varList = list(),
-    data = NULL
+    data = NULL,
+    # Dummy value to force reactive updates when the manager's varList is modified.
+    varListReactive = list()
   )
   
-  # ADD VARIABLE BUTTON -----------------------------------------------------------------
+
+# ADD VARIABLE  -----------------------------------------------------------
+
+
   observeEvent(input$addVar, {
-    # Build a list of existing numeric variable names
-    numericVars <- lapply(rv$varList, function(x) {
-      if (x$varType == "numeric") x$varName else NULL
-    })
-    numericVars <- unlist(numericVars, use.names = FALSE)
-    
-    # Show the modal. Pass numericVars so the correlation dropdown can be updated
+    # Build a list of existing numeric variable names from the manager's varList.
+    numericVars <- names(dataManager$varList)
+    # Show the modal (from advancedUI.R); pass numericVars for the correlation dropdown.
     showModal(getAddVariableModal(existingNumericVars = numericVars))
   })
   
-  # ACCEPT VARIABLE - read modal inputs -----------------------------------------------------------------
+
+# ACCEPT VARIABLE  --------------------------------------------------------
+
+
   observeEvent(input$acceptVar, {
     varName <- input$varName_modal
     if (!nzchar(varName)) {
@@ -41,7 +53,7 @@ server <- function(input, output, session) {
       distType <- input$distType_modal
       newVarDef$distType <- distType
       
-      # Collect distribution parameters
+      # Collect distribution parameters based on distribution type.
       switch(distType,
              "Normal" = {
                newVarDef$mean <- input$param_normal_mean
@@ -89,42 +101,43 @@ server <- function(input, output, session) {
              }
       )
       
-      # Correlation
+      # Set correlation if defined.
       if (!is.null(input$corrWith_modal) && input$corrWith_modal != "None") {
-        corrVar <- input$corrWith_modal
-        corrVal <- input$corrValue_modal
-        newVarDef$corr <- list(varName = corrVar, value = corrVal)
+        newVarDef$corr <- list(varName = input$corrWith_modal, value = input$corrValue_modal)
       } else {
         newVarDef$corr <- NULL
       }
       
-    } else {
-      # For categorical variables
+    } else {  # For categorical variables.
       catVec <- c(input$cat1, input$cat2, input$cat3, 
                   input$cat4, input$cat5, input$cat6)
-      catVec <- catVec[nzchar(catVec)]  # Remove blanks
+      catVec <- catVec[nzchar(catVec)]  # Remove blank entries.
       if (length(catVec) == 0) {
         catVec <- "Category1"
       }
       newVarDef$categories <- catVec
-      newVarDef$corr <- NULL  # Ignoring correlation for categorical variables
+      newVarDef$corr <- NULL  # Correlation not applicable.
     }
     
-    # Store in rv$varList
-    rv$varList[[varName]] <- newVarDef
-    
+    # Add the new variable definition to our SyntheticDataManager.
+    dataManager$addVariable(newVarDef)
+    # Update our reactive dummy value so that UI outputs (variable cards) re-render.
+    rv$varListReactive <- dataManager$varList
     removeModal()
     showNotification("Variable added successfully!", type = "message")
   })
   
-  # VARIABLE CARDS -----------------------------------------------------------------
+
+# VARIABLE CARDS ----------------------------------------------------------
+
+
   output$varCards <- renderUI({
-    if (length(rv$varList) == 0) {
+    if (length(rv$varListReactive) == 0) {
       return(tags$i("No variables defined yet."))
     }
     
-    # For each variable, create a summary "card"
-    cards <- lapply(rv$varList, function(vdef) {
+    # Create a "card" for each variable.
+    cards <- lapply(rv$varListReactive, function(vdef) {
       varName <- vdef$varName
       varType <- vdef$varType
       desc    <- vdef$desc
@@ -140,13 +153,10 @@ server <- function(input, output, session) {
         } else if (distType == "Lognormal") {
           paramStr <- paste0("meanlog=", vdef$meanlog, ", sdlog=", vdef$sdlog)
         }
-        # etc. for other distributions
-        
         corrStr <- ""
         if (!is.null(vdef$corr)) {
           corrStr <- paste0("Corr with ", vdef$corr$varName, "=", vdef$corr$value)
         }
-        
         body <- tagList(
           strong("Type: "), "Numeric (", distType, ")",
           br(),
@@ -154,9 +164,8 @@ server <- function(input, output, session) {
           if (nzchar(corrStr)) tagList(strong("Correlation: "), corrStr, br()),
           if (nzchar(desc)) tagList(strong("Description: "), desc)
         )
-        
       } else {
-        # Categorical variable
+        # For categorical variables.
         catStr <- paste(vdef$categories, collapse = ", ")
         body <- tagList(
           strong("Type: "), "Categorical",
@@ -175,9 +184,12 @@ server <- function(input, output, session) {
     tagList(cards)
   })
   
-  # GENERATE DATA -----------------------------------------------------------------
+
+# GENERATE DATA -----------------------------------------------------------
+
+
   observeEvent(input$generateData, {
-    if (length(rv$varList) == 0) {
+    if (length(rv$varListReactive) == 0) {
       showNotification("No variables defined. Please add at least one variable.", type = "error")
       return()
     }
@@ -194,129 +206,44 @@ server <- function(input, output, session) {
     ))
   })
   
+ 
   observeEvent(input$confirmGenerate, {
     removeModal()
     nObs <- input$nObs_modal
     noiseSD <- input$globalNoise
     missingPct <- input$globalMissing / 100
-    
-    # 1) Separate numeric vs. categorical
-    numericVars <- Filter(function(x) x$varType == "numeric", rv$varList)
-    catVars     <- Filter(function(x) x$varType == "categorical", rv$varList)
-    
-    numNames <- sapply(numericVars, `[[`, "varName")
-    p <- length(numNames)
-    corrMat <- diag(p)
-    
-    # 2) Fill correlation from the single correlation link (if any)
-    if (p > 0) {
-      for (i in seq_along(numericVars)) {
-        v_i <- numericVars[[i]]
-        if (!is.null(v_i$corr)) {
-          j <- match(v_i$corr$varName, numNames)
-          if (!is.na(j)) {
-            corrVal <- v_i$corr$value
-            corrMat[i, j] <- corrVal
-            corrMat[j, i] <- corrVal
-          }
-        }
-      }
-      corrMat <- make_positive_definite(corrMat)
-      
-      # Generate correlated standard normals
-      Z <- MASS::mvrnorm(nObs, mu = rep(0, p), Sigma = corrMat)
-      Z <- as.data.frame(Z)
-      names(Z) <- numNames
-      
-      # Transform each dimension based on the chosen distribution
-      for (i in seq_along(numericVars)) {
-        vdef <- numericVars[[i]]
-        colZ <- Z[[vdef$varName]]
-        u <- pnorm(colZ)
-        
-        distType <- vdef$distType
-        if (distType == "Normal") {
-          colFinal <- vdef$mean + vdef$sd * colZ
-        } else if (distType == "Uniform") {
-          colFinal <- vdef$minVal + u * (vdef$maxVal - vdef$minVal)
-        } else if (distType == "Lognormal") {
-          colFinal <- exp(vdef$meanlog + vdef$sdlog * colZ)
-        } else if (distType == "Exponential") {
-          colFinal <- qexp(u, rate = vdef$rate)
-        } else if (distType == "Gamma") {
-          colFinal <- qgamma(u, shape = vdef$shape, rate = vdef$rate)
-        } else if (distType == "Beta") {
-          colFinal <- qbeta(u, shape1 = vdef$alpha, shape2 = vdef$beta)
-        } else if (distType == "Poisson") {
-          colFinal <- qpois(u, lambda = vdef$lambda)
-        } else if (distType == "Binomial") {
-          colFinal <- qbinom(u, size = vdef$size, prob = vdef$prob)
-        } else if (distType == "NegBinomial") {
-          colFinal <- qnbinom(u, size = vdef$size, prob = vdef$prob)
-        } else if (distType == "ChiSquared") {
-          colFinal <- qchisq(u, df = vdef$df)
-        } else if (distType == "StudentT") {
-          colFinal <- qt(u, df = vdef$df)
-        } else if (distType == "F") {
-          colFinal <- qf(u, df1 = vdef$df1, df2 = vdef$df2)
-        } else {
-          # Fallback to standard normal if distribution type is not recognized
-          colFinal <- colZ
-        }
-        Z[[vdef$varName]] <- colFinal
-      }
-      numericDF <- Z
-    } else {
-      numericDF <- NULL
-    }
-    
-    # 3) Build final data frame
-    df <- numericDF
-    
-    # 4) Add categorical variables
-    if (length(catVars) > 0) {
-      catDF <- list()
-      for (cv in catVars) {
-        catName <- cv$varName
-        catLevels <- cv$categories
-        catDF[[catName]] <- factor(sample(catLevels, size = nObs, replace = TRUE), 
-                                   levels = catLevels)
-      }
-      catDF <- as.data.frame(catDF)
-      if (is.null(df)) {
-        df <- catDF
-      } else {
-        df <- cbind(df, catDF)
-      }
-    }
-    
-    # 5) Add global noise to numeric variables (if specified)
-    if (!is.null(numericDF) && noiseSD > 0) {
-      for (colName in names(numericDF)) {
-        df[[colName]] <- df[[colName]] + rnorm(nObs, mean = 0, sd = noiseSD)
-      }
-    }
-    
-    # 6) Impose missingness
-    if (missingPct > 0) {
-      for (cn in names(df)) {
-        idx <- sample(seq_len(nObs), size = floor(nObs * missingPct))
-        df[idx, cn] <- NA
-      }
-    }
-    
-    rv$data <- df
-    showNotification("Data generation complete.", type = "message")
-    updateTabsetPanel(session, "mainNav", selected = "Data Summary")
+    tryCatch({
+      generatedData <- dataManager$generateData(nObs, noiseSD, missingPct)
+      rv$data <- generatedData
+      showNotification("Data generation complete.", type = "message")
+      updateTabsetPanel(session, "mainNav", selected = "Data Summary")
+    }, error = function(e) {
+      showNotification(paste("Error:", e$message), type = "error")
+    })
   })
   
-  # DATA PREVIEW -----------------------------------------------------------------
+
+# DATA PREVIEW & DOWNLOAD -------------------------------------------------
+
+
   output$dataPreview <- renderDT({
     req(rv$data)
     datatable(rv$data, options = list(pageLength = 10, scrollX = TRUE))
   })
   
-  # VISUALISATION SECTION --------------------------------------------------------
+  output$downloadData <- downloadHandler(
+    filename = function() {
+      paste("synthetic_data_", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(rv$data, file, row.names = FALSE)
+    }
+  )
+  
+
+# VISUALISATION -----------------------------------------------------------
+
+ 
   output$varSelectUI <- renderUI({
     req(rv$data)
     selectInput("selectedVar", "Select Variable", choices = names(rv$data))
@@ -325,14 +252,14 @@ server <- function(input, output, session) {
   output$distPlot <- renderPlot({
     req(input$selectedVar, rv$data)
     varData <- rv$data[[input$selectedVar]]
-    varData <- na.omit(varData)  # remove any NA values for fitting
+    varData <- na.omit(varData)  # remove any NA values
     
-    # If the selected variable has a definition, use it to determine the distribution type
-    if (input$selectedVar %in% names(rv$varList)) {
-      vdef <- rv$varList[[input$selectedVar]]
+    # If the selected variable is defined in our manager's varList, use its definition.
+    if (input$selectedVar %in% names(rv$varListReactive)) {
+      vdef <- rv$varListReactive[[input$selectedVar]]
       if (vdef$varType == "numeric") {
         distType <- vdef$distType
-        # Map the modal name to an R distribution name
+        # Map distribution names to R distribution abbreviations.
         dist_mapping <- list(
           "Normal" = "norm",
           "Uniform" = "unif",
@@ -352,12 +279,12 @@ server <- function(input, output, session) {
           chosen_dist <- "norm"
         }
         
-        # Attempt to fit the selected distribution using fitdist()
+        # Attempt to fit the distribution using fitdist() from the fitdistrplus package.
         fit <- tryCatch({
           fitdist(varData, chosen_dist)
         }, error = function(e) NULL)
         
-        # Get the corresponding density function (e.g., dnorm, dunif, etc.)
+        # Obtain the corresponding density function.
         density_fun <- tryCatch({
           get(paste0("d", chosen_dist))
         }, error = function(e) NULL)
@@ -365,8 +292,8 @@ server <- function(input, output, session) {
           density_fun <- dnorm
         }
         
-        #fix for poisson distributions
-        if(chosen_dist == "pois") {
+        # Special handling for Poisson distributions.
+        if (chosen_dist == "pois") {
           density_fun <- pois_density
         } else {
           density_fun <- get(paste0("d", chosen_dist))
@@ -408,17 +335,4 @@ server <- function(input, output, session) {
     }
   })
   
-  #Export Data to CSV ------------------------------------------
-  output$downloadData <- downloadHandler(
-    filename = function() {
-      paste("synthetic_data_", Sys.Date(), ".csv", sep = "")
-    },
-    content = function(file) {
-      write.csv(rv$data, file, row.names = FALSE)
-    }
-  )
 }
-
-
-
-
